@@ -1,0 +1,11 @@
+name = "Csvtax"
+ 
+description = "Transforms a CSV file to a drupal taxonomy"
+ 
+core        = "7.x"
+version     = "7.x-1.0"
+package     = "Reshetech"
+
+files[]     = csvtax.module
+
+configure   = admin/config/csvtax

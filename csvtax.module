@@ -1,0 +1,288 @@
+<?php
+/**
+ * Implements hook_permission().
+ */
+function csvtax_permission() {
+  return array(
+    'access csvtax' => array(
+        'title'       => t('Acess csvtax configuration page'),
+        'description' => t('Which role is allowed to access the csvtax configuration page'),
+    ),
+  );
+}
+
+
+/**
+ * Implements hook_menu().
+ */
+function csvtax_menu () {
+ 
+    // Makes "csvtax settings" appear on the administration configuration page.
+    $items['admin/config/csvtax'] = array(
+		'title'            => 'Csvtax settings',
+		'description'      => 'The csv you want to convert to taxonomy',
+		'access arguments' => array('access csvtax'),
+		'page callback'    => 'drupal_get_form',
+		'page arguments'   => array( 'csvtax_config_form'),
+		'type'             => MENU_NORMAL_ITEM,
+    );
+ 
+    return $items;
+}
+
+
+/**
+ * Implements hook_form().
+ */
+function csvtax_config_form($form, &$form_state) {
+    // An encoding type that allows files to be sent through a POST.
+    $form['#attributes'] = array(
+        'enctype' => 'multipart/form-data',
+    );
+	
+    // The name of the new vocabulary the user wants to create.
+    $form['csvtax']['vocabulary_name'] = array(
+		'#type' => 'textfield', 
+		'#title' => t('Vocabulary name'), 
+		'#description' => t('The name of the vocabulary to be created'),
+		'#size' => 60, 
+		'#maxlength' => 128, 
+		'#required' => TRUE,
+    );
+  
+	// The user inputs the csv file.
+	$form['csvtax']['source'] = array(
+		'#title' => t('The csv'),
+		'#type' => 'file',
+		'#description' => t('Upload a csv file'),
+	);
+ 
+	$form['submit'] = array(
+		'#type' => 'submit',
+		'#value' => t('Create taxonomy vocabulary from the input'),
+		'#submit' => array('csvtax_config_form_submit'),
+	);
+ 
+    return $form;
+}
+
+
+function csvtax_config_form_submit($form, &$form_state) {
+
+    // The values that are passed from the form.
+    $vocabulary_name = $form_state['values']['vocabulary_name'];
+    
+    // Necessary, since Drupal doesn't allow the upload of CSV files as default behavior.
+    $validators = array('file_validate_extensions' => array('csv'),);
+    
+    // The file will be added to the {file_managed} table as a temporary file.
+    $file = file_save_upload('source', $validators, 'public://docs' . variable_get('document_path', ''), FILE_EXISTS_REPLACE);
+    
+    if ($file) {
+        // The file's location.
+        $doc_url = file_create_url($file->uri);
+        
+        // Sets the status of the uploaded file.
+        $file->status = FILE_STATUS_PERMANENT;
+        
+        // Saves a file object to the database.
+        file_save($file);
+    } else {
+        form_set_error('source', t('The file failed to upload.'));
+    }
+
+    
+    // The array of raw data from the csv file.
+    $raw_array_from_csv = array();
+    
+    // Array of parent taxonomy terms' names and tids.
+    // Will be used after we create the parents term to
+    // define the parents for the child terms.
+    $highest_parents = array();
+
+    // Open the file we have just uploaded, and provide a handle.
+    if (($handle = fopen("{$doc_url}", "r")) !== FALSE)
+    {
+        // Each line produces one array of $data items seperated by ",".
+        while (($data = fgetcsv($handle, 1000, ",")) !== FALSE)
+        {
+            $raw_array_from_csv[] = $data;          
+        }
+        fclose($handle);   
+    }
+    
+    $machine_name = csvtax_create_vocabulary($vocabulary_name);  
+    
+    
+    if(!$machine_name) return;
+    
+    
+    // Load the vocabulary we have just created.
+    $vocabulary   = taxonomy_vocabulary_machine_name_load($machine_name);
+
+    // 1. Take only the first item from each line (these items are the highest order of parents in the taxonomy we are creating).
+    $only_generation_0 = array();
+    
+    // 2. Count the number of rows in the taxonomy file.
+    $count_big_array   = 0;
+    
+    // 3. Determine the highest number of generations in a row.
+    $the_highest_number_of_items_in_row = 0;
+
+    foreach($raw_array_from_csv as $csv_item)
+    {    
+        $number_of_items_in_the_row = count($csv_item);    
+            
+        if($number_of_items_in_the_row > $the_highest_number_of_items_in_row) 
+            $the_highest_number_of_items_in_row = $number_of_items_in_the_row;   
+             
+        $only_generation_0[] = $csv_item[0];
+        
+        $count_big_array++;
+    }
+
+    // For generation 0, filter and leave only unique parents without duplicates,
+    // since each child term may have only one parent.
+    $unique_from_generation_0 = array_unique($only_generation_0);
+    
+    
+    
+    // Array to hold the array of all the terms in a generation.
+    $all_the_terms_in_generation = array();
+    
+    // For the first generation.
+    $generation_counter = 0;
+
+
+    $all_the_terms_in_generation[0] = csvtax_create_taxonomy_terms_parents($unique_from_generation_0, $vocabulary);
+
+    for($generation_counter=0;$generation_counter<$the_highest_number_of_items_in_row;$generation_counter++)
+    {                
+        $all_the_terms_in_generation[$generation_counter+1] = 
+            csvtax_create_the_taxonomy_children($raw_array_from_csv,$all_the_terms_in_generation[$generation_counter],$vocabulary,$generation_counter);
+    }
+}
+
+
+
+
+
+function csvtax_create_vocabulary($vocabulary_name) {
+    // Create a machine name from the vocabulary name.
+    $machine_name = str_replace(' ', '_', strtolower($vocabulary_name));
+
+    
+    // Create a vocabulary name, if it doesn't already exist.
+    if(taxonomy_vocabulary_machine_name_load($machine_name) !== FALSE){
+        form_set_error('vocabulary_name', t('The vocabulary name exists. Please choose another name.'));
+        return false;
+    } 
+    
+    // Save the new vocabulary.
+    $new_vocabulary = (object)array(
+        'name'         => $vocabulary_name,
+        'description'  => '',
+        'machine_name' => $machine_name,
+    );
+    
+    taxonomy_vocabulary_save($new_vocabulary);
+    
+    // Inform the user we have just created a new vocabulary.
+    drupal_set_message("A new vocabulary '{$vocabulary_name}' was created");
+    
+    
+    return $machine_name;
+}
+
+
+/**
+ * Create the generation of taxonomy parents.
+ * @param array  $array_terms_to_create
+ * @param object $vocabulary
+ * return array of the terms in the parents generation.
+ */
+function csvtax_create_taxonomy_terms_parents($array_terms_to_create,$vocabulary){
+    foreach($array_terms_to_create as $taxonomy_item_to_save){
+        
+        $term = csvtax_create_term($taxonomy_item_to_save,$vocabulary);
+            
+        // Load the taxonomy term we have just created.
+        $loaded_term = taxonomy_term_load($term -> tid);     
+
+        // Add the taxonomy term to the array of terms in the current generation.
+        $all_the_terms_in_the_current_generation[] = array($loaded_term -> name => $loaded_term -> tid);
+    }
+
+
+    return  $all_the_terms_in_the_current_generation;
+}
+
+
+/**
+ * Create a generation of taxonomy children.
+ * @param array  $raw_array_from_csv
+ * @param array  $parents
+ * @param object $vocabulary
+ * @param int    $generation_counter
+ * return array of the terms in the current generation.
+ */
+function csvtax_create_the_taxonomy_children($raw_array_from_csv,$parents,$vocabulary,$generation_counter){
+
+    // Create the children in the taxonomy.
+    foreach($raw_array_from_csv as $row){
+
+        $parent_item_name = $row[$generation_counter];
+        $child_item_name  = $row[$generation_counter+1];  
+
+        if($parent_item_name!='' && $child_item_name!='')
+        {
+            // If matches, we found the parent and can take its' tid.
+            foreach($parents as $parent){
+                foreach($parent as $parent_key => $parent_value){
+                    if($parent_key == $parent_item_name){
+                        $parent_tid = $parent_value;                    
+                    }             
+                }
+            }
+
+            $term = csvtax_create_term($child_item_name,$vocabulary,$parent_tid);
+            
+            // Load the taxonomy term we have just created.
+            $loaded_term = taxonomy_term_load($term -> tid);
+            
+            // Add the taxonomy term to the array of terms in the current generation.
+            $all_the_terms_in_the_current_generation[] = array($loaded_term -> name => $loaded_term -> tid); 
+        }
+ 
+    }
+    
+    
+    return  $all_the_terms_in_the_current_generation;
+}
+
+
+/**
+ * Create a taxonomy term.
+ * @param string $term_name
+ * @param object $vocabulary
+ * @param int    $parent_tid
+ * return object $term
+ */
+function csvtax_create_term($term_name,$vocabulary,$parent_tid=null)
+{
+    // Save the taxonomy term.
+    $term = (object)array(
+        'name'        => $term_name,
+        'description' => '',
+        'parent'      => $parent_tid,
+        'vid'         => $vocabulary -> vid,
+    );
+
+    taxonomy_term_save($term);
+    
+    // Inform the user.
+    drupal_set_message("The taxonomy term '{$term_name}' was created.");
+    
+    
+    return $term;
+}
