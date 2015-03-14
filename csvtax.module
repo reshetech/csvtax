@@ -67,6 +67,9 @@ function csvtax_config_form($form, &$form_state) {
 }
 
 
+/**
+ * Handle the data that was received from the form.
+ */
 function csvtax_config_form_submit($form, &$form_state) {
 
     // The values that are passed from the form.
@@ -165,8 +168,11 @@ function csvtax_config_form_submit($form, &$form_state) {
 
 
 
-
-
+/**
+ * Create the taxonomy vocabulary.
+ * @param string  $vocabulary_name
+ * return string of the generated machine name or false if the vocabulary exists.
+ */
 function csvtax_create_vocabulary($vocabulary_name) {
     // Create a machine name from the vocabulary name.
     $machine_name = str_replace(' ', '_', strtolower($vocabulary_name));
@@ -210,11 +216,11 @@ function csvtax_create_taxonomy_terms_parents($array_terms_to_create,$vocabulary
         $loaded_term = taxonomy_term_load($term -> tid);     
 
         // Add the taxonomy term to the array of terms in the current generation.
-        $all_the_terms_in_the_current_generation[] = array($loaded_term -> name => $loaded_term -> tid);
+        $all_the_terms_in_the_parents_generation[] = array($loaded_term -> name => $loaded_term -> tid);
     }
 
 
-    return  $all_the_terms_in_the_current_generation;
+    return  $all_the_terms_in_the_parents_generation;
 }
 
 
@@ -227,7 +233,12 @@ function csvtax_create_taxonomy_terms_parents($array_terms_to_create,$vocabulary
  * return array of the terms in the current generation.
  */
 function csvtax_create_the_taxonomy_children($raw_array_from_csv,$parents,$vocabulary,$generation_counter){
-
+    // Register used items (item name and item tid) to prevent duplication.
+    $all_the_terms_in_the_current_generation = array();
+    
+    // Register used child (item name and item parent tid) to prevent duplication.
+    $already_used_children = array();
+    
     // Create the children in the taxonomy.
     foreach($raw_array_from_csv as $row){
 
@@ -244,20 +255,45 @@ function csvtax_create_the_taxonomy_children($raw_array_from_csv,$parents,$vocab
                     }             
                 }
             }
+            
+            
+            // Don't register a child if it already exists.
+            if(!is_existing_child_term($already_used_children,$child_item_name,$parent_tid))
+            {
+                $already_used_children[$child_item_name] = $parent_tid;
+                
+                $term = csvtax_create_term($child_item_name,$vocabulary,$parent_tid);
+                
+                // Load the taxonomy term we have just created.
+                $loaded_term = taxonomy_term_load($term -> tid);
 
-            $term = csvtax_create_term($child_item_name,$vocabulary,$parent_tid);
-            
-            // Load the taxonomy term we have just created.
-            $loaded_term = taxonomy_term_load($term -> tid);
-            
-            // Add the taxonomy term to the array of terms in the current generation.
-            $all_the_terms_in_the_current_generation[] = array($loaded_term -> name => $loaded_term -> tid); 
+                // Add the taxonomy term to the array of terms in the current generation.
+                $all_the_terms_in_the_current_generation[] = array($loaded_term -> name => $loaded_term -> tid); 
+            }
         }
  
     }
-    
-    
+
+
     return  $all_the_terms_in_the_current_generation;
+}
+
+
+/**
+ * Does the child term exist and have the same parent.
+ * @param array  $already_used_children
+ * @param string $child_item_name
+ * return bool   
+ */
+function is_existing_child_term($already_used_children,$child_item_name,$parent_tid)
+{
+    if(isset($already_used_children[$child_item_name]))
+    {
+        if($already_used_children[$child_item_name] == $parent_tid) return true;
+    }
+
+   
+    return false;
 }
 
 
